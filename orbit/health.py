@@ -68,7 +68,7 @@ class LocalHealthMonitor(QObject):
         request.setAttribute(QNetworkRequest.Attribute.RedirectPolicyAttribute,
                              QNetworkRequest.RedirectPolicy.ManualRedirectPolicy)
         reply = self.manager.get(request)
-        reply.readyRead.connect(reply.readAll)
+        reply.readyRead.connect(lambda r=reply: r.readAll())
         self.pending[url] = reply
         reply.finished.connect(lambda r=reply, target=url: self._finished(target, r))
 
