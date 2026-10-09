@@ -57,6 +57,42 @@ class WindowSmokeTests(unittest.TestCase):
                  for button in self.window.nav_buttons.values()}
         self.assertEqual(sizes, {(68, 68)})
 
+    def test_project_update_is_explicit_and_uses_project_folder(self):
+        from unittest.mock import patch
+
+        self.window.open_project(self.project.id)
+        self.assertTrue(self.window.update_button.isEnabled())
+        with patch("orbit.main_window.GitUpdateDialog") as dialog:
+            self.window.update_project()
+        dialog.assert_called_once()
+        self.assertEqual(dialog.call_args.args[0], Path(self.project.folder))
+        self.assertFalse(self.window.processes.is_running(self.project.commands[0].id))
+
+    def test_update_dialog_runs_git_outside_ui_thread(self):
+        from unittest.mock import patch
+        from orbit.git_update import GitUpdateResult
+        from orbit.git_update_dialog import GitUpdateDialog
+
+        dialog = GitUpdateDialog(Path(self.project.folder), self.window)
+
+        def slow_update(_folder):
+            time.sleep(0.2)
+            return GitUpdateResult("old", "new")
+
+        with patch("orbit.git_update_dialog.update_repository", side_effect=slow_update):
+            started = time.monotonic()
+            dialog.start_update()
+            self.assertLess(time.monotonic() - started, 0.1)
+            deadline = time.monotonic() + 5
+            while dialog.worker is not None and time.monotonic() < deadline:
+                self.app.processEvents()
+                time.sleep(0.01)
+        self.assertIsNone(dialog.worker)
+        self.assertIn("обновлено", dialog.status.text())
+        dialog.close()
+        dialog.deleteLater()
+        self.app.processEvents()
+
     def test_command_output_reaches_log_view(self):
         command = self.project.commands[0]
         self.window.open_project(self.project.id)

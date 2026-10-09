@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 from . import icons
 from .github import GithubRepository, suggest_commands
 from .github_dialog import GithubDialog
+from .git_update_dialog import GitUpdateDialog
 from .models import PROJECT_KINDS, Project
 from .processes import ProcessManager
 from .project_card import ProjectCard
@@ -290,8 +291,10 @@ class MainWindow(QMainWindow):
         self.folder_button = self._detail_button("Папка", self.open_folder)
         self.editor_button = self._detail_button("Редактор", self.open_editor)
         self.repo_button = self._detail_button("Репозиторий", lambda: self.open_link("repository_url"))
+        self.update_button = self._detail_button("Обновить код", self.update_project)
         self.site_button = self._detail_button("Сайт", lambda: self.open_link("site_url"))
-        for button in (self.folder_button, self.editor_button, self.repo_button, self.site_button):
+        for button in (self.folder_button, self.editor_button, self.repo_button,
+                       self.update_button, self.site_button):
             links.addWidget(button)
         links.addStretch()
         column.addLayout(links)
@@ -405,6 +408,9 @@ class MainWindow(QMainWindow):
         self.detail_title.setText(project.name)
         self.detail_description.setText(f"{project.kind}  ·  {project.folder}\n{project.description or 'Описание не указано'}")
         self.repo_button.setEnabled(bool(project.repository_url))
+        self.update_button.setEnabled((Path(project.folder) / ".git").exists()
+                                      and not any(self.processes.is_running(c.id) for c in project.commands))
+        self.update_button.setToolTip("Получить только новые изменения через Git")
         self.site_button.setEnabled(bool(project.site_url))
         while self.extra_links_layout.count():
             item = self.extra_links_layout.takeAt(0)
@@ -502,6 +508,19 @@ class MainWindow(QMainWindow):
         ))
         self._refresh_all()
         self.open_project(project.id)
+
+    def update_project(self):
+        project = self._detail_project()
+        if not project:
+            return
+        if any(self.processes.is_running(c.id) for c in project.commands):
+            QMessageBox.warning(self, "Команды запущены", "Остановите команды проекта перед обновлением кода.")
+            return
+        if not (Path(project.folder) / ".git").exists():
+            QMessageBox.warning(self, "Git-репозиторий не найден", "В папке проекта нет локального Git-репозитория.")
+            return
+        dialog = GitUpdateDialog(Path(project.folder), self)
+        dialog.exec()
 
     def edit_project(self, project_id: int | None):
         project = self.store.get(project_id) if project_id is not None else None
