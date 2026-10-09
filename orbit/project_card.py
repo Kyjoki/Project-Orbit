@@ -25,7 +25,7 @@ class ProjectCard(QFrame):
         self.project_id = project.id
         self.setObjectName("projectCard")
         self.setMinimumWidth(285)
-        self.setFixedHeight(225 if health else 190)
+        self.setFixedHeight(225)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
@@ -57,15 +57,14 @@ class ProjectCard(QFrame):
         badge.setProperty("state", status)
         badge.setFixedWidth(112)
         layout.addWidget(badge)
-        if health:
-            labels = {"online": "доступен", "offline": "недоступен", "checking": "проверка"}
-            health_text = "   ·   ".join(f"{name}: {labels.get(state, 'проверка')}" for name, state, _ in health)
-            health_label = QLabel(health_text)
-            health_label.setObjectName("smallCaption")
-            health_label.setWordWrap(True)
-            health_label.setFixedHeight(27)
-            health_label.setToolTip("\n".join(url for _, _, url in health))
-            layout.addWidget(health_label)
+        labels = {"online": "доступен", "offline": "недоступен", "checking": "проверка"}
+        health_text = "   ·   ".join(f"{name}: {labels.get(state, 'проверка')}" for name, state, _ in health)
+        health_label = QLabel(health_text)
+        health_label.setObjectName("smallCaption")
+        health_label.setWordWrap(True)
+        health_label.setFixedHeight(27)
+        health_label.setToolTip("\n".join(url for _, _, url in health))
+        layout.addWidget(health_label)
         actions = QHBoxLayout()
         run = QPushButton("Остановить" if status == "running" else "Запустить")
         run.setObjectName("danger" if status == "running" else "primary")

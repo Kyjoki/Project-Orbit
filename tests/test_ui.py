@@ -58,18 +58,28 @@ class WindowSmokeTests(unittest.TestCase):
         self.assertEqual(sizes, {(68, 68)})
 
     def test_project_card_shows_local_site_and_api_states(self):
-        from PySide6.QtWidgets import QLabel
+        from PySide6.QtWidgets import QLabel, QPushButton
         from orbit.project_card import ProjectCard
 
         card = ProjectCard(self.project, "running", [
             ("Сайт", "online", "http://127.0.0.1:5173"),
             ("API", "offline", "http://127.0.0.1:8010/docs"),
         ])
+        plain_card = ProjectCard(self.project, "running")
+        card.show()
+        plain_card.show()
+        self.app.processEvents()
         captions = " ".join(label.text() for label in card.findChildren(QLabel))
         self.assertIn("Сайт: доступен", captions)
         self.assertIn("API: недоступен", captions)
+        self.assertEqual(card.height(), plain_card.height())
+        card_run = next(button for button in card.findChildren(QPushButton) if button.text() == "Остановить")
+        plain_run = next(button for button in plain_card.findChildren(QPushButton) if button.text() == "Остановить")
+        self.assertEqual(card_run.y(), plain_run.y())
         card.close()
         card.deleteLater()
+        plain_card.close()
+        plain_card.deleteLater()
         self.app.processEvents()
 
     def test_project_update_is_explicit_and_uses_project_folder(self):
