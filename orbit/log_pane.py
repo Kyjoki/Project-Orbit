@@ -1,7 +1,10 @@
 """Reusable log viewer with search and copy controls."""
 
+from pathlib import Path
+
 from PySide6.QtGui import QTextCursor, QTextDocument
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
+                               QMessageBox, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget)
 
 
 class LogPane(QWidget):
@@ -27,11 +30,16 @@ class LogPane(QWidget):
         self.copy_button = QPushButton("Копировать")
         self.copy_button.setToolTip("Скопировать показанные логи")
         self.copy_button.clicked.connect(self.copy_text)
+        self.save_button = QPushButton("Сохранить в файл")
+        self.save_button.setToolTip("Выбрать файл для сохранения показанных логов")
+        self.save_button.clicked.connect(self.save_text)
+        self.save_button.setEnabled(False)
         controls.addWidget(self.search, 1)
         controls.addWidget(self.match_count)
         controls.addWidget(previous)
         controls.addWidget(following)
         controls.addWidget(self.copy_button)
+        controls.addWidget(self.save_button)
         layout.addLayout(controls)
         self.viewer = QPlainTextEdit()
         self.viewer.setReadOnly(True)
@@ -40,6 +48,7 @@ class LogPane(QWidget):
 
     def set_text(self, value: str) -> None:
         self.viewer.setPlainText(value)
+        self.save_button.setEnabled(bool(value))
         if self.search.text():
             self._query_changed()
         else:
@@ -52,6 +61,7 @@ class LogPane(QWidget):
         cursor = self.viewer.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.insertText(value)
+        self.save_button.setEnabled(True)
         if self.search.text():
             self.viewer.setTextCursor(previous)
             self._update_match_count()
@@ -95,3 +105,16 @@ class LogPane(QWidget):
 
     def copy_text(self):
         QApplication.clipboard().setText(self.viewer.toPlainText())
+
+    def save_text(self):
+        content = self.viewer.toPlainText()
+        if not content:
+            return
+        filename, _ = QFileDialog.getSaveFileName(self, "Сохранить логи", "orbit-log.txt",
+                                                   "Текстовые файлы (*.txt);;Все файлы (*)")
+        if not filename:
+            return
+        try:
+            Path(filename).write_text(content, encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(self, "Не удалось сохранить логи", str(exc))

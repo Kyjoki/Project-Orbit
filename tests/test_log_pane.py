@@ -1,5 +1,8 @@
 import os
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -30,6 +33,23 @@ class LogPaneTests(unittest.TestCase):
         self.app.processEvents()
         from PySide6.QtCore import QCoreApplication, QEvent
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_save_requires_explicit_file_choice(self):
+        from orbit.log_pane import LogPane
+
+        pane = LogPane()
+        pane.set_text("[2026-10-10 12:00:00] hello\n")
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as directory:
+            destination = Path(directory) / "chosen.txt"
+            with patch("orbit.log_pane.QFileDialog.getSaveFileName", return_value=("", "")):
+                pane.save_button.click()
+            self.assertFalse(destination.exists())
+            with patch("orbit.log_pane.QFileDialog.getSaveFileName", return_value=(str(destination), "Text files (*.txt)")):
+                pane.save_button.click()
+            self.assertEqual(destination.read_text(encoding="utf-8"), pane.viewer.toPlainText())
+        pane.close()
+        pane.deleteLater()
+        self.app.processEvents()
 
 
 if __name__ == "__main__":

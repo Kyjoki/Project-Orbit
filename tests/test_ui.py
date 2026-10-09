@@ -118,21 +118,23 @@ class WindowSmokeTests(unittest.TestCase):
             time.sleep(0.02)
         self.assertIn("42", self.window.detail_log.toPlainText())
         self.assertRegex(self.window.detail_log.toPlainText(), r"\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\] 42")
-        self.window.log_store.flush()
-        self.assertIn("42", self.window.log_store.read(command.id))
+        self.assertFalse((Path(self.temp.name) / "logs").exists())
 
-    def test_saved_log_is_visible_after_restart(self):
+    def test_logs_are_memory_only_and_old_log_files_are_not_loaded(self):
         from orbit.main_window import MainWindow
         from orbit.storage import ProjectStore
 
         command_id = self.project.commands[0].id
-        self.window.log_store.append(command_id, "[2026-10-10 12:00:00] saved line\n")
-        self.window.log_store.flush()
+        old_logs = Path(self.temp.name) / "logs"
+        old_logs.mkdir(exist_ok=True)
+        (old_logs / f"{command_id}.log").write_text("legacy log\n", encoding="utf-8")
+        self.window.logs[command_id] = "[2026-10-10 12:00:00] current session\n"
         self.window.close()
         self.store = ProjectStore(Path(self.temp.name) / "ui.db")
         self.window = MainWindow(self.store)
         self.window.open_project(self.project.id)
-        self.assertIn("saved line", self.window.detail_log.toPlainText())
+        self.assertEqual(self.window.detail_log.toPlainText(), "")
+        self.assertEqual((old_logs / f"{command_id}.log").read_text(encoding="utf-8"), "legacy log\n")
 
     def test_project_form_keeps_type_and_custom_link(self):
         from orbit.project_dialog import ProjectDialog
