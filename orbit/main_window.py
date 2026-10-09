@@ -5,10 +5,10 @@ import subprocess
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QShortcut, QTextCursor
+from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QStackedWidget,
+    QMessageBox, QPushButton, QScrollArea, QStackedWidget,
     QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -16,6 +16,9 @@ from . import icons
 from .github import GithubRepository, suggest_commands
 from .github_dialog import GithubDialog
 from .git_update_dialog import GitUpdateDialog
+from .health import LocalHealthMonitor, local_targets
+from .log_pane import LogPane
+from .logs import LogStore, timestamp_lines
 from .models import PROJECT_KINDS, Project
 from .processes import ProcessManager
 from .project_card import ProjectCard
@@ -41,6 +44,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.store = store
         self.processes = ProcessManager()
+        self.log_store = LogStore(self.store.path.parent / "logs")
         self.logs: dict[int, str] = {}
         self.exit_codes: dict[int, int] = {}
         self.user_stopped_ids: set[int] = set()
@@ -48,6 +52,8 @@ class MainWindow(QMainWindow):
         self.detail_command_id: int | None = None
         self.log_command_id: int | None = None
         self.command_controls: dict[int, tuple[QLabel, QPushButton, QPushButton]] = {}
+        self.health = LocalHealthMonitor(self)
+        self.health.changed.connect(self._health_changed)
         self.setWindowTitle("Project Orbit")
         self.setWindowIcon(QIcon(icons.logo_pixmap(48)))
         self.resize(1280, 800)
@@ -76,6 +82,8 @@ class MainWindow(QMainWindow):
             QShortcut(QKeySequence(f"Ctrl+{index}"), self,
                       activated=lambda page=key: self.show_page(page))
         self._refresh_all()
+        self.log_store.prune({command.id for project in self.store.list_projects()
+                              for command in project.commands})
         self.show_page("projects")
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.process_events)
@@ -219,14 +227,13 @@ class MainWindow(QMainWindow):
         return value
 
     def _build_logs_page(self) -> QWidget:
-        page, column = self._page("Логи", "Вывод команд в текущем сеансе")
+        page, column = self._page("Логи", "Сохранённый вывод команд")
         self.log_selector = QComboBox()
         self.log_selector.currentIndexChanged.connect(self._choose_global_log)
         column.addWidget(self.log_selector)
-        self.global_log = QPlainTextEdit()
-        self.global_log.setReadOnly(True)
-        self.global_log.setMaximumBlockCount(2000)
-        column.addWidget(self.global_log, 1)
+        self.global_log_pane = LogPane()
+        self.global_log = self.global_log_pane.viewer
+        column.addWidget(self.global_log_pane, 1)
         return page
 
     def _build_settings_page(self) -> QWidget:
@@ -239,12 +246,16 @@ class MainWindow(QMainWindow):
         path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         body.addWidget(path)
         body.addWidget(make_label("Команды запускаются только по нажатию. При выходе активные процессы останавливаются.", "muted"))
+        body.addWidget(make_label("Логи сохраняются в папке logs рядом с базой: до 1 МБ на команду и 20 МБ всего.", "muted"))
+        log_path = make_label(str(self.log_store.directory), "smallCaption")
+        log_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        body.addWidget(log_path)
         column.addWidget(section)
         future = QFrame()
         future.setObjectName("detailSection")
         future_body = QVBoxLayout(future)
         future_body.addWidget(make_label("Планируется", "sectionTitle"))
-        future_body.addWidget(make_label("Мониторинг сайтов и ИИ-анализ ошибок будут добавлены в следующих версиях.", "muted"))
+        future_body.addWidget(make_label("Проверяются локальные сайты и API. Внешний мониторинг и ИИ-анализ ошибок запланированы.", "muted"))
         column.addWidget(future)
         github_section = QFrame()
         github_section.setObjectName("detailSection")
@@ -302,6 +313,10 @@ class MainWindow(QMainWindow):
         self.extra_links_layout = QHBoxLayout(self.extra_links_host)
         self.extra_links_layout.setContentsMargins(0, 0, 0, 0)
         column.addWidget(self.extra_links_host)
+        self.health_host = QWidget()
+        self.health_layout = QHBoxLayout(self.health_host)
+        self.health_layout.setContentsMargins(0, 0, 0, 0)
+        column.addWidget(self.health_host)
         column.addWidget(make_label("Команды", "sectionTitle"))
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -314,10 +329,9 @@ class MainWindow(QMainWindow):
         column.addWidget(scroll, 2)
         self.detail_log_title = make_label("Логи — выберите команду", "sectionTitle")
         column.addWidget(self.detail_log_title)
-        self.detail_log = QPlainTextEdit()
-        self.detail_log.setReadOnly(True)
-        self.detail_log.setMaximumBlockCount(2000)
-        column.addWidget(self.detail_log, 3)
+        self.detail_log_pane = LogPane()
+        self.detail_log = self.detail_log_pane.viewer
+        column.addWidget(self.detail_log_pane, 3)
         return page
 
     def _detail_button(self, title: str, handler) -> QPushButton:
@@ -339,7 +353,7 @@ class MainWindow(QMainWindow):
         return "stopped"
 
     def _new_card(self, project: Project) -> ProjectCard:
-        card = ProjectCard(project, self._project_status(project))
+        card = ProjectCard(project, self._project_status(project), self._health_for(project))
         card.open_requested.connect(self.open_project)
         card.toggle_requested.connect(self.toggle_project)
         card.edit_requested.connect(self.edit_project)
@@ -382,6 +396,7 @@ class MainWindow(QMainWindow):
         self._choose_global_log()
 
     def _refresh_all(self):
+        self._sync_health_targets()
         self._refresh_project_cards()
         self._refresh_overview()
         self._refresh_log_selector()
@@ -390,8 +405,28 @@ class MainWindow(QMainWindow):
 
     def _choose_global_log(self, *_):
         self.log_command_id = self.log_selector.currentData()
-        self.global_log.setPlainText(self.logs.get(self.log_command_id, ""))
-        self.global_log.moveCursor(QTextCursor.MoveOperation.End)
+        self.global_log_pane.set_text(self._log_text(self.log_command_id))
+
+    def _log_text(self, command_id: int | None) -> str:
+        if command_id is None:
+            return ""
+        if command_id not in self.logs:
+            self.logs[command_id] = self.log_store.read(command_id)[-200_000:]
+        return self.logs[command_id]
+
+    def _health_for(self, project: Project) -> list[tuple[str, str, str]]:
+        return [(name, self.health.states.get(url, "checking"), url)
+                for name, url in local_targets(project)]
+
+    def _sync_health_targets(self) -> None:
+        urls = {url for project in self.store.list_projects() for _, url in local_targets(project)}
+        self.health.set_targets(urls)
+
+    def _health_changed(self, *_):
+        self._refresh_project_cards()
+        self._refresh_overview()
+        if self.detail_project_id is not None:
+            self._fill_health(self.store.get(self.detail_project_id))
 
     def open_project(self, project_id: int):
         if self.store.get(project_id):
@@ -424,6 +459,7 @@ class MainWindow(QMainWindow):
                 button.clicked.connect(lambda _, url=link.url: self.open_url(url))
                 self.extra_links_layout.addWidget(button)
             self.extra_links_layout.addStretch()
+        self._fill_health(project)
         while self.command_layout.count() > 1:
             item = self.command_layout.takeAt(0)
             if item.widget():
@@ -460,8 +496,23 @@ class MainWindow(QMainWindow):
     def select_detail_log(self, command_id: int | None, name: str):
         self.detail_command_id = command_id
         self.detail_log_title.setText(f"Логи · {name}" if name else "Логи — выберите команду")
-        self.detail_log.setPlainText(self.logs.get(command_id, ""))
-        self.detail_log.moveCursor(QTextCursor.MoveOperation.End)
+        self.detail_log_pane.set_text(self._log_text(command_id))
+
+    def _fill_health(self, project: Project | None):
+        while self.health_layout.count():
+            item = self.health_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        targets = self._health_for(project) if project else []
+        self.health_host.setVisible(bool(targets))
+        for name, state, url in targets:
+            label = make_label(f"● {name}: " + {"online": "доступен", "offline": "недоступен",
+                                                 "checking": "проверка"}.get(state, "проверка"))
+            label.setStyleSheet("color: #3DD598" if state == "online" else
+                                "color: #FF6B6B" if state == "offline" else "color: #98A0B0")
+            label.setToolTip(url)
+            self.health_layout.addWidget(label)
+        self.health_layout.addStretch()
 
     def _refresh_command_control(self, command_id: int):
         widgets = self.command_controls.get(command_id)
@@ -532,6 +583,9 @@ class MainWindow(QMainWindow):
         dialog = ProjectDialog(project, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.store.save(dialog.result_project())
+            valid_ids = {command.id for item in self.store.list_projects() for command in item.commands}
+            self.log_store.prune(valid_ids)
+            self.logs = {command_id: value for command_id, value in self.logs.items() if command_id in valid_ids}
             self._refresh_all()
 
     def delete_project(self, project_id: int | None):
@@ -544,6 +598,7 @@ class MainWindow(QMainWindow):
             self.processes.stop(command.id)
             self.logs.pop(command.id, None)
             self.exit_codes.pop(command.id, None)
+            self.log_store.delete(command.id)
         self.store.delete(project.id)
         if self.detail_project_id == project.id:
             self.detail_project_id = None
@@ -583,33 +638,34 @@ class MainWindow(QMainWindow):
 
     def process_events(self):
         state_changed = False
+        persist: dict[int, list[str]] = {}
+        valid_ids = {command.id for project in self.store.list_projects() for command in project.commands}
         for event in self.processes.drain_events():
+            if event.command_id not in valid_ids:
+                continue
             if event.kind == "started":
-                self.logs[event.command_id] = f"[Запущено: {event.text}]\n"
+                formatted = timestamp_lines(f"[Запущено: {event.text}]\n")
                 self.exit_codes.pop(event.command_id, None)
                 state_changed = True
             elif event.kind == "output":
-                self.logs[event.command_id] = (self.logs.get(event.command_id, "") + event.text)[-200_000:]
+                formatted = timestamp_lines(event.text)
             elif event.kind == "finished":
                 manually_stopped = event.command_id in self.user_stopped_ids
                 self.user_stopped_ids.discard(event.command_id)
                 self.exit_codes[event.command_id] = 0 if manually_stopped else int(event.text)
                 ending = "[Остановлено пользователем]" if manually_stopped else f"[Завершено, код {event.text}]"
-                self.logs[event.command_id] = (self.logs.get(event.command_id, "") +
-                                               f"\n{ending}\n")[-200_000:]
+                formatted = timestamp_lines(ending + "\n")
                 state_changed = True
-            for selected_id, view in ((self.detail_command_id, self.detail_log),
-                                      (self.log_command_id, self.global_log)):
-                if event.command_id != selected_id:
-                    continue
-                if event.kind == "started":
-                    view.setPlainText(self.logs[event.command_id])
-                elif event.kind == "output":
-                    view.moveCursor(QTextCursor.MoveOperation.End)
-                    view.insertPlainText(event.text)
-                elif event.kind == "finished":
-                    view.appendPlainText(f"\n{ending}")
-                view.moveCursor(QTextCursor.MoveOperation.End)
+            else:
+                continue
+            self.logs[event.command_id] = (self._log_text(event.command_id) + formatted)[-200_000:]
+            persist.setdefault(event.command_id, []).append(formatted)
+            if event.command_id == self.detail_command_id:
+                self.detail_log_pane.append(formatted)
+            if event.command_id == self.log_command_id:
+                self.global_log_pane.append(formatted)
+        for command_id, chunks in persist.items():
+            self.log_store.append(command_id, "".join(chunks))
         if state_changed:
             self._refresh_all()
 
@@ -654,6 +710,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.timer.stop()
+        self.health.stop()
         self.processes.stop_all()
+        self.process_events()
+        self.log_store.close()
         self.store.close()
         super().closeEvent(event)

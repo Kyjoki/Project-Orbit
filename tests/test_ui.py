@@ -57,6 +57,21 @@ class WindowSmokeTests(unittest.TestCase):
                  for button in self.window.nav_buttons.values()}
         self.assertEqual(sizes, {(68, 68)})
 
+    def test_project_card_shows_local_site_and_api_states(self):
+        from PySide6.QtWidgets import QLabel
+        from orbit.project_card import ProjectCard
+
+        card = ProjectCard(self.project, "running", [
+            ("Сайт", "online", "http://127.0.0.1:5173"),
+            ("API", "offline", "http://127.0.0.1:8010/docs"),
+        ])
+        captions = " ".join(label.text() for label in card.findChildren(QLabel))
+        self.assertIn("Сайт: доступен", captions)
+        self.assertIn("API: недоступен", captions)
+        card.close()
+        card.deleteLater()
+        self.app.processEvents()
+
     def test_project_update_is_explicit_and_uses_project_folder(self):
         from unittest.mock import patch
 
@@ -102,6 +117,22 @@ class WindowSmokeTests(unittest.TestCase):
             self.app.processEvents()
             time.sleep(0.02)
         self.assertIn("42", self.window.detail_log.toPlainText())
+        self.assertRegex(self.window.detail_log.toPlainText(), r"\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\] 42")
+        self.window.log_store.flush()
+        self.assertIn("42", self.window.log_store.read(command.id))
+
+    def test_saved_log_is_visible_after_restart(self):
+        from orbit.main_window import MainWindow
+        from orbit.storage import ProjectStore
+
+        command_id = self.project.commands[0].id
+        self.window.log_store.append(command_id, "[2026-10-10 12:00:00] saved line\n")
+        self.window.log_store.flush()
+        self.window.close()
+        self.store = ProjectStore(Path(self.temp.name) / "ui.db")
+        self.window = MainWindow(self.store)
+        self.window.open_project(self.project.id)
+        self.assertIn("saved line", self.window.detail_log.toPlainText())
 
     def test_project_form_keeps_type_and_custom_link(self):
         from orbit.project_dialog import ProjectDialog
@@ -112,6 +143,9 @@ class WindowSmokeTests(unittest.TestCase):
         result = dialog.result_project()
         self.assertEqual(result.kind, "Веб-сайт")
         self.assertEqual(result.links[0].title, "Документация")
+        dialog.close()
+        dialog.deleteLater()
+        self.app.processEvents()
 
     def test_user_stop_is_not_shown_as_error(self):
         command = self.project.commands[0]
