@@ -50,6 +50,20 @@ class ProjectStoreTests(unittest.TestCase):
         self.store.delete(project.id)
         self.assertEqual(self.store.get_project_branches(project.id), [])
 
+    def test_worktree_variants_share_one_visible_project_and_delete_together(self):
+        root = self.store.save(Project(name="Argus", folder="C:/argus",
+                                       branch_name="feat/pretest-check"))
+        variant = self.store.save(Project(name="Argus camera", folder="C:/argus-camera",
+                                          parent_project_id=root.id,
+                                          branch_name="codex/camera-performance-safe"))
+        self.assertEqual([p.id for p in self.store.list_root_projects()], [root.id])
+        self.assertEqual([p.id for p in self.store.list_variants(root.id)], [root.id, variant.id])
+        self.store.close()
+        self.store = ProjectStore(Path(self.temp.name) / "orbit.db")
+        self.assertEqual(self.store.get(variant.id).parent_project_id, root.id)
+        self.store.delete(root.id)
+        self.assertIsNone(self.store.get(variant.id))
+
     def test_old_database_gets_project_type_column(self):
         import sqlite3
         legacy_path = Path(self.temp.name) / "legacy.db"

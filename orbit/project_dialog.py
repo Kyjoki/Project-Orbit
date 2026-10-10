@@ -148,4 +148,6 @@ class ProjectDialog(QDialog):
             description=self.description.toPlainText().strip(),
             repository_url=self.repo.text().strip(), site_url=self.site.text().strip(),
             editor_command=self.editor.text().strip() or "code", commands=commands, links=links,
+            parent_project_id=self.project.parent_project_id if self.project else None,
+            branch_name=self.project.branch_name if self.project else "",
         )

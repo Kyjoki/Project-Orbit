@@ -30,3 +30,5 @@ class Project:
     commands: list[Command] = field(default_factory=list)
     links: list[Link] = field(default_factory=list)
     id: int | None = None
+    parent_project_id: int | None = None
+    branch_name: str = ""

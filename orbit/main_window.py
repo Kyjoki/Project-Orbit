@@ -50,6 +50,7 @@ class MainWindow(QMainWindow):
         self.exit_codes: dict[int, int] = {}
         self.user_stopped_ids: set[int] = set()
         self.detail_project_id: int | None = None
+        self.detail_variant_id: int | None = None
         self.detail_command_id: int | None = None
         self.log_command_id: int | None = None
         self.command_controls: dict[int, tuple[QLabel, QPushButton, QPushButton]] = {}
@@ -294,6 +295,17 @@ class MainWindow(QMainWindow):
         heading.addWidget(edit)
         heading.addWidget(delete)
         column.addLayout(heading)
+        self.branch_selector_host = QWidget()
+        branch_row = QHBoxLayout(self.branch_selector_host)
+        branch_row.setContentsMargins(0, 0, 0, 0)
+        branch_row.addWidget(make_label("Рабочая ветка", "muted"))
+        self.branch_selector = QComboBox()
+        self.branch_selector.setMinimumWidth(250)
+        self.branch_selector.setToolTip("Выберите рабочую папку ветки. Команды не запускаются автоматически.")
+        self.branch_selector.currentIndexChanged.connect(self._select_variant)
+        branch_row.addWidget(self.branch_selector)
+        branch_row.addStretch()
+        column.addWidget(self.branch_selector_host)
         links = QHBoxLayout()
         self.folder_button = self._detail_button("Папка", self.open_folder)
         self.editor_button = self._detail_button("Редактор", self.open_editor)
@@ -345,14 +357,17 @@ class MainWindow(QMainWindow):
             button.setChecked(name == checked)
 
     def _project_status(self, project: Project) -> str:
-        if any(self.processes.is_running(command.id) for command in project.commands):
+        commands = [command for variant in self.store.list_variants(project.id)
+                    for command in variant.commands]
+        if any(self.processes.is_running(command.id) for command in commands):
             return "running"
-        if any(self.exit_codes.get(command.id, 0) != 0 for command in project.commands):
+        if any(self.exit_codes.get(command.id, 0) != 0 for command in commands):
             return "error"
         return "stopped"
 
     def _new_card(self, project: Project) -> ProjectCard:
-        card = ProjectCard(project, self._project_status(project), self._health_for(project))
+        card = ProjectCard(project, self._project_status(project), self._health_for(project),
+                           branch_count=len(self.store.list_variants(project.id)))
         card.open_requested.connect(self.open_project)
         card.toggle_requested.connect(self.toggle_project)
         card.edit_requested.connect(self.edit_project)
@@ -360,10 +375,13 @@ class MainWindow(QMainWindow):
         return card
 
     def _refresh_project_cards(self, *_):
-        projects = self.store.list_projects()
+        projects = self.store.list_root_projects()
         statuses = {project.id: self._project_status(project) for project in projects}
+        search = {project.id: " ".join(f"{variant.branch_name} {variant.name} {variant.folder}"
+                                       for variant in self.store.list_variants(project.id))
+                  for project in projects}
         visible = filter_projects(projects, self.search.text(), self.type_filter.currentData(),
-                                  self.state_filter.currentData(), statuses)
+                                  self.state_filter.currentData(), statuses, search)
         self.project_grid.set_items([self._new_card(project) for project in visible])
         self.project_grid.setVisible(bool(visible))
         self.project_empty.setText("Пока нет проектов. Нажмите «Добавить проект», чтобы начать." if not projects
@@ -372,9 +390,10 @@ class MainWindow(QMainWindow):
         self.result_count.setText(f"Найдено: {len(visible)} из {len(projects)}" if projects else "")
 
     def _refresh_overview(self):
-        projects = self.store.list_projects()
+        projects = self.store.list_root_projects()
         self.stat_projects.setText(str(len(projects)))
-        self.stat_running.setText(str(sum(self.processes.is_running(c.id) for p in projects for c in p.commands)))
+        self.stat_running.setText(str(sum(self.processes.is_running(c.id)
+                                          for p in self.store.list_projects() for c in p.commands)))
         self.stat_errors.setText(str(sum(self._project_status(p) == "error" for p in projects)))
         self.overview_grid.set_items([self._new_card(project) for project in projects[:4]])
         self.overview_grid.setVisible(bool(projects))
@@ -423,21 +442,49 @@ class MainWindow(QMainWindow):
         self._refresh_project_cards()
         self._refresh_overview()
         if self.detail_project_id is not None:
-            self._fill_health(self.store.get(self.detail_project_id))
+            self._fill_health(self._detail_project())
 
     def open_project(self, project_id: int):
-        if self.store.get(project_id):
-            self.detail_project_id = project_id
+        project = self.store.get(project_id)
+        if not project:
+            return
+        root_id = project.parent_project_id or project.id
+        if self.detail_project_id != root_id or project.parent_project_id is not None:
+            self.detail_variant_id = project.id
+        self.detail_project_id = root_id
+        self._fill_detail()
+        self.show_page("detail")
+
+    def _select_variant(self, *_):
+        variant_id = self.branch_selector.currentData()
+        if variant_id is not None and variant_id != self.detail_variant_id:
+            self.detail_variant_id = variant_id
             self._fill_detail()
-            self.show_page("detail")
 
     def _fill_detail(self):
-        project = self.store.get(self.detail_project_id)
-        if not project:
+        root = self.store.get(self.detail_project_id)
+        if not root:
             self.detail_project_id = None
+            self.detail_variant_id = None
             self.show_page("projects")
             return
-        self.detail_title.setText(project.name)
+        variants = self.store.list_variants(root.id)
+        if self.detail_variant_id not in {item.id for item in variants}:
+            self.detail_variant_id = root.id
+        project = next(item for item in variants if item.id == self.detail_variant_id)
+        self.branch_selector.blockSignals(True)
+        self.branch_selector.clear()
+        for item in variants:
+            label = item.branch_name or item.name
+            if any(self.processes.is_running(command.id) for command in item.commands):
+                label += " · работает"
+            elif any(self.exit_codes.get(command.id, 0) != 0 for command in item.commands):
+                label += " · ошибка"
+            self.branch_selector.addItem(label, item.id)
+        self.branch_selector.setCurrentIndex(self.branch_selector.findData(project.id))
+        self.branch_selector.blockSignals(False)
+        self.branch_selector_host.setVisible(len(variants) > 1)
+        self.detail_title.setText(root.name)
         self.detail_description.setText(f"{project.kind}  ·  {project.folder}\n{project.description or 'Описание не указано'}")
         self.repo_button.setEnabled(bool(project.repository_url))
         git_folder = (Path(project.folder) / ".git").exists()
@@ -445,6 +492,7 @@ class MainWindow(QMainWindow):
         self.update_button.setEnabled(git_folder and commands_stopped)
         self.update_button.setToolTip("Получить только новые изменения через Git")
         self.branches_button.setEnabled(git_folder and commands_stopped)
+        self.branches_button.setVisible(len(variants) == 1)
         self.branches_button.setToolTip("Выбрать ветки и переключить локальный Git-проект")
         branch = ""
         if git_folder:
@@ -614,21 +662,27 @@ class MainWindow(QMainWindow):
         project = self.store.get(project_id) if project_id is not None else None
         if not project:
             return
+        variants = self.store.list_variants(project.id)
         if QMessageBox.question(self, "Удалить проект", f"Удалить «{project.name}» из Project Orbit?\nФайлы проекта сохранятся.") != QMessageBox.StandardButton.Yes:
             return
-        for command in project.commands:
-            self.processes.stop(command.id)
-            self.logs.pop(command.id, None)
-            self.exit_codes.pop(command.id, None)
+        for variant in variants:
+            for command in variant.commands:
+                self.processes.stop(command.id)
+                self.logs.pop(command.id, None)
+                self.exit_codes.pop(command.id, None)
         self.store.delete(project.id)
         if self.detail_project_id == project.id:
             self.detail_project_id = None
+            self.detail_variant_id = None
             self.show_page("projects")
         self._refresh_all()
 
     def toggle_project(self, project_id: int):
         project = self.store.get(project_id)
         if not project:
+            return
+        if len(self.store.list_variants(project.id)) > 1:
+            self.open_project(project.id)
             return
         if any(self.processes.is_running(c.id) for c in project.commands):
             for command in project.commands:
@@ -687,7 +741,8 @@ class MainWindow(QMainWindow):
             self._refresh_all()
 
     def _detail_project(self) -> Project | None:
-        return self.store.get(self.detail_project_id) if self.detail_project_id is not None else None
+        project_id = self.detail_variant_id or self.detail_project_id
+        return self.store.get(project_id) if project_id is not None else None
 
     def open_folder(self):
         project = self._detail_project()

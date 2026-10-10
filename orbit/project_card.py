@@ -19,7 +19,8 @@ class ProjectCard(QFrame):
     delete_requested = Signal(int)
 
     def __init__(self, project: Project, status: str,
-                 health: list[tuple[str, str, str]] | None = None, parent=None):
+                 health: list[tuple[str, str, str]] | None = None, parent=None,
+                 branch_count: int = 1):
         super().__init__(parent)
         health = health or []
         self.project_id = project.id
@@ -40,7 +41,7 @@ class ProjectCard(QFrame):
         name = QLabel(project.name)
         name.setObjectName("cardTitle")
         name.setToolTip(project.name)
-        kind = QLabel(project.kind)
+        kind = QLabel(project.kind + (f" · Веток: {branch_count}" if branch_count > 1 else ""))
         kind.setObjectName("muted")
         title_column.addWidget(name)
         title_column.addWidget(kind)
@@ -66,11 +67,15 @@ class ProjectCard(QFrame):
         health_label.setToolTip("\n".join(url for _, _, url in health))
         layout.addWidget(health_label)
         actions = QHBoxLayout()
-        run = QPushButton("Остановить" if status == "running" else "Запустить")
-        run.setObjectName("danger" if status == "running" else "primary")
-        run.setIcon(icons.icon("stop" if status == "running" else "play", "#FFFFFF", 15))
-        run.setEnabled(bool(project.commands))
-        run.clicked.connect(lambda: self.toggle_requested.emit(self.project_id))
+        grouped = branch_count > 1
+        run = QPushButton("Ветки" if grouped else "Остановить" if status == "running" else "Запустить")
+        run.setObjectName("primary" if grouped else "danger" if status == "running" else "primary")
+        run.setIcon(icons.icon("folder" if grouped else "stop" if status == "running" else "play", "#FFFFFF", 15))
+        run.setEnabled(grouped or bool(project.commands))
+        if grouped:
+            run.clicked.connect(lambda: self.open_requested.emit(self.project_id))
+        else:
+            run.clicked.connect(lambda: self.toggle_requested.emit(self.project_id))
         open_button = QPushButton("Открыть")
         open_button.setIcon(icons.icon("external", "#E7E9EF", 15))
         open_button.clicked.connect(lambda: self.open_requested.emit(self.project_id))

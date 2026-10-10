@@ -52,6 +52,42 @@ class WindowSmokeTests(unittest.TestCase):
         self.assertEqual(self.window.detail_title.text(), "Example Site")
         self.assertEqual(len(self.window.command_controls), 1)
 
+    def test_worktree_branches_appear_under_one_project_card(self):
+        from orbit.models import Command, Project
+        from PySide6.QtWidgets import QPushButton
+        from unittest.mock import patch
+
+        feature_folder = Path(self.temp.name) / "feature"
+        (feature_folder / ".git").mkdir(parents=True)
+        variant = self.store.save(Project(
+            name="Example Site [feature]", folder=str(feature_folder),
+            parent_project_id=self.project.id, branch_name="feat/example",
+            commands=[Command("Feature", "python feature.py")],
+        ))
+        self.window._refresh_all()
+        self.assertEqual(len(self.window.project_grid.items), 1)
+        self.assertEqual(self.window.stat_projects.text(), "1")
+        branch_button = next(button for button in self.window.project_grid.items[0].findChildren(QPushButton)
+                             if button.text() == "Ветки")
+        with patch.object(self.window.processes, "start") as start:
+            branch_button.click()
+            self.assertEqual(self.window.detail_title.text(), "Example Site")
+            start.assert_not_called()
+        self.assertEqual(self.window.branch_selector.count(), 2)
+        self.assertTrue(self.window.branch_selector_host.isVisible())
+        self.assertFalse(self.window.branches_button.isVisible())
+        index = self.window.branch_selector.findData(variant.id)
+        self.assertGreaterEqual(index, 0)
+        with patch.object(self.window.processes, "start") as start:
+            self.window.branch_selector.setCurrentIndex(index)
+            start.assert_not_called()
+        self.assertIn("feature", self.window.detail_description.text())
+        self.assertEqual(set(self.window.command_controls), {variant.commands[0].id})
+        self.assertEqual(self.window._detail_project().folder, variant.folder)
+        with patch("orbit.main_window.GitUpdateDialog") as dialog:
+            self.window.update_project()
+        self.assertEqual(dialog.call_args.args[0], feature_folder)
+
     def test_sidebar_buttons_have_equal_width(self):
         sizes = {(button.minimumWidth(), button.maximumWidth())
                  for button in self.window.nav_buttons.values()}

@@ -16,7 +16,8 @@ class ProjectStore:
                 id INTEGER PRIMARY KEY, name TEXT NOT NULL, folder TEXT NOT NULL,
                 kind TEXT NOT NULL DEFAULT 'Другое',
                 description TEXT NOT NULL DEFAULT '', repository_url TEXT NOT NULL DEFAULT '',
-                site_url TEXT NOT NULL DEFAULT '', editor_command TEXT NOT NULL DEFAULT 'code'
+                site_url TEXT NOT NULL DEFAULT '', editor_command TEXT NOT NULL DEFAULT 'code',
+                parent_project_id INTEGER, branch_name TEXT NOT NULL DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS commands (
                 id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -39,6 +40,12 @@ class ProjectStore:
         if "kind" not in columns:
             with self.db:
                 self.db.execute("ALTER TABLE projects ADD COLUMN kind TEXT NOT NULL DEFAULT 'Другое'")
+        if "parent_project_id" not in columns:
+            with self.db:
+                self.db.execute("ALTER TABLE projects ADD COLUMN parent_project_id INTEGER")
+        if "branch_name" not in columns:
+            with self.db:
+                self.db.execute("ALTER TABLE projects ADD COLUMN branch_name TEXT NOT NULL DEFAULT ''")
 
     def save(self, project: Project) -> Project:
         if not project.name.strip() or not project.folder.strip():
@@ -48,16 +55,24 @@ class ProjectStore:
         if any(not link.title.strip() or not link.url.strip() for link in project.links):
             raise ValueError("У каждой ссылки должны быть название и адрес.")
         values = (project.name.strip(), project.folder.strip(), project.kind.strip() or "Другое", project.description,
-                  project.repository_url.strip(), project.site_url.strip(), project.editor_command.strip())
+                  project.repository_url.strip(), project.site_url.strip(), project.editor_command.strip(),
+                  project.parent_project_id, project.branch_name.strip())
         with self.db:
+            if project.parent_project_id is not None:
+                parent = self.db.execute("SELECT parent_project_id FROM projects WHERE id=?",
+                                         (project.parent_project_id,)).fetchone()
+                if parent is None or parent[0] is not None:
+                    raise ValueError("Основной проект для ветки не найден.")
             if project.id is None:
                 cursor = self.db.execute("""INSERT INTO projects
-                    (name, folder, kind, description, repository_url, site_url, editor_command)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)""", values)
+                    (name, folder, kind, description, repository_url, site_url, editor_command,
+                     parent_project_id, branch_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", values)
                 project.id = cursor.lastrowid
             else:
                 cursor = self.db.execute("""UPDATE projects SET name=?, folder=?, kind=?, description=?,
-                    repository_url=?, site_url=?, editor_command=? WHERE id=?""", (*values, project.id))
+                    repository_url=?, site_url=?, editor_command=?, parent_project_id=?, branch_name=?
+                    WHERE id=?""", (*values, project.id))
                 if cursor.rowcount == 0:
                     raise ValueError("Проект больше не существует.")
                 self.db.execute("DELETE FROM commands WHERE project_id=?", (project.id,))
@@ -78,14 +93,34 @@ class ProjectStore:
                  for link in self.db.execute("SELECT * FROM links WHERE project_id=? ORDER BY id", (project_id,))]
         return Project(name=row["name"], folder=row["folder"], kind=row["kind"], description=row["description"],
                        repository_url=row["repository_url"], site_url=row["site_url"],
-                       editor_command=row["editor_command"], commands=commands, links=links, id=row["id"])
+                       editor_command=row["editor_command"], commands=commands, links=links, id=row["id"],
+                       parent_project_id=row["parent_project_id"], branch_name=row["branch_name"])
 
     def list_projects(self) -> list[Project]:
         ids = [row["id"] for row in self.db.execute("SELECT id FROM projects ORDER BY name COLLATE NOCASE")]
         return [self.get(project_id) for project_id in ids]
 
+    def list_root_projects(self) -> list[Project]:
+        ids = [row["id"] for row in self.db.execute(
+            "SELECT id FROM projects WHERE parent_project_id IS NULL ORDER BY name COLLATE NOCASE")]
+        return [self.get(project_id) for project_id in ids]
+
+    def list_variants(self, project_id: int) -> list[Project]:
+        root = self.get(project_id)
+        if root is None:
+            return []
+        if root.parent_project_id is not None:
+            root = self.get(root.parent_project_id)
+            if root is None:
+                return []
+        ids = [row["id"] for row in self.db.execute(
+            "SELECT id FROM projects WHERE parent_project_id=? ORDER BY branch_name COLLATE NOCASE",
+            (root.id,))]
+        return [root, *(self.get(project_id) for project_id in ids)]
+
     def delete(self, project_id: int) -> None:
         with self.db:
+            self.db.execute("DELETE FROM projects WHERE parent_project_id=?", (project_id,))
             self.db.execute("DELETE FROM projects WHERE id=?", (project_id,))
 
     def get_setting(self, key: str, default: str = "") -> str:
