@@ -82,11 +82,66 @@ class WindowSmokeTests(unittest.TestCase):
             self.window.branch_selector.setCurrentIndex(index)
             start.assert_not_called()
         self.assertIn("feature", self.window.detail_description.text())
-        self.assertEqual(set(self.window.command_controls), {variant.commands[0].id})
+        self.assertEqual(set(self.window.command_controls),
+                         {self.project.commands[0].id, variant.commands[0].id})
         self.assertEqual(self.window._detail_project().folder, variant.folder)
         with patch("orbit.main_window.GitUpdateDialog") as dialog:
             self.window.update_project()
         self.assertEqual(dialog.call_args.args[0], feature_folder)
+
+    def test_start_all_runs_student_and_teacher_for_every_worktree_only_on_click(self):
+        from orbit.models import Command, Project
+        from unittest.mock import patch
+
+        root = self.store.save(Project(
+            name="Argus", folder=str(Path(self.temp.name) / "main"),
+            commands=[Command("Студент", "python main.py"),
+                      Command("Преподаватель", "python -m teacher")],
+        ))
+        child = self.store.save(Project(
+            name="Argus [feature]", folder=str(Path(self.temp.name) / "feature"),
+            parent_project_id=root.id, branch_name="feat/example",
+            commands=[Command("Студент", "python main.py"),
+                      Command("Преподаватель", "python -m teacher")],
+        ))
+        with patch.object(self.window.processes, "start") as start:
+            self.window.open_project(root.id)
+            start.assert_not_called()
+            self.assertEqual(len(self.window.command_controls), 4)
+            self.window.start_all_button.click()
+            self.assertEqual({call.args for call in start.call_args_list}, {
+                (command.id, command.command, project.folder)
+                for project in (root, child) for command in project.commands
+            })
+
+    def test_start_and_stop_three_branch_processes_together(self):
+        from orbit.models import Command, Project
+
+        projects = []
+        for index in range(3):
+            folder = Path(self.temp.name) / f"branch-{index}"
+            folder.mkdir()
+            project = self.store.save(Project(
+                name=f"Branch {index}", folder=str(folder),
+                parent_project_id=projects[0].id if projects else None,
+                branch_name=f"branch-{index}",
+                commands=[Command("Test", f'"{sys.executable}" -u -c "import time; time.sleep(15)"')],
+            ))
+            projects.append(project)
+        self.window.open_project(projects[0].id)
+        self.window.start_all_button.click()
+        ids = [project.commands[0].id for project in projects]
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not all(self.window.processes.is_running(i) for i in ids):
+            self.app.processEvents()
+            time.sleep(0.02)
+        self.assertTrue(all(self.window.processes.is_running(i) for i in ids))
+        self.window.stop_all_button.click()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and any(self.window.processes.is_running(i) for i in ids):
+            self.app.processEvents()
+            time.sleep(0.02)
+        self.assertFalse(any(self.window.processes.is_running(i) for i in ids))
 
     def test_sidebar_buttons_have_equal_width(self):
         sizes = {(button.minimumWidth(), button.maximumWidth())

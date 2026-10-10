@@ -298,7 +298,7 @@ class MainWindow(QMainWindow):
         self.branch_selector_host = QWidget()
         branch_row = QHBoxLayout(self.branch_selector_host)
         branch_row.setContentsMargins(0, 0, 0, 0)
-        branch_row.addWidget(make_label("Рабочая ветка", "muted"))
+        branch_row.addWidget(make_label("Папка для действий", "muted"))
         self.branch_selector = QComboBox()
         self.branch_selector.setMinimumWidth(250)
         self.branch_selector.setToolTip("Выберите рабочую папку ветки. Команды не запускаются автоматически.")
@@ -328,7 +328,19 @@ class MainWindow(QMainWindow):
         self.health_layout = QHBoxLayout(self.health_host)
         self.health_layout.setContentsMargins(0, 0, 0, 0)
         column.addWidget(self.health_host)
-        column.addWidget(make_label("Команды", "sectionTitle"))
+        command_heading = QHBoxLayout()
+        command_heading.addWidget(make_label("Команды", "sectionTitle"))
+        command_heading.addStretch()
+        self.start_all_button = QPushButton("Запустить все")
+        self.start_all_button.setObjectName("primary")
+        self.start_all_button.setToolTip("Запустить все команды каждой рабочей ветки")
+        self.start_all_button.clicked.connect(self.start_all_branches)
+        self.stop_all_button = QPushButton("Остановить все")
+        self.stop_all_button.setObjectName("danger")
+        self.stop_all_button.clicked.connect(self.stop_all_branches)
+        command_heading.addWidget(self.start_all_button)
+        command_heading.addWidget(self.stop_all_button)
+        column.addLayout(command_heading)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setMinimumHeight(160)
@@ -484,6 +496,13 @@ class MainWindow(QMainWindow):
         self.branch_selector.setCurrentIndex(self.branch_selector.findData(project.id))
         self.branch_selector.blockSignals(False)
         self.branch_selector_host.setVisible(len(variants) > 1)
+        all_commands = [(variant, command) for variant in variants for command in variant.commands]
+        self.start_all_button.setVisible(len(variants) > 1)
+        self.stop_all_button.setVisible(len(variants) > 1)
+        self.start_all_button.setEnabled(any(not self.processes.is_running(command.id)
+                                             for _, command in all_commands))
+        self.stop_all_button.setEnabled(any(self.processes.is_running(command.id)
+                                            for _, command in all_commands))
         self.detail_title.setText(root.name)
         self.detail_description.setText(f"{project.kind}  ·  {project.folder}\n{project.description or 'Описание не указано'}")
         self.repo_button.setEnabled(bool(project.repository_url))
@@ -521,33 +540,47 @@ class MainWindow(QMainWindow):
             if item.widget():
                 item.widget().deleteLater()
         self.command_controls.clear()
-        if not project.commands:
+        if not all_commands:
             empty = make_label("Команд пока нет. Добавьте их через «Изменить».", "muted")
             self.command_layout.insertWidget(0, empty)
-        for command in project.commands:
-            row = QFrame()
-            row.setObjectName("detailSection")
-            cells = QHBoxLayout(row)
-            labels = QVBoxLayout()
-            labels.addWidget(make_label(command.name, "cardTitle"))
-            labels.addWidget(make_label(command.command, "muted"))
-            cells.addLayout(labels, 1)
-            status = make_label("")
-            view = QPushButton("Логи")
-            run = QPushButton("Запустить")
-            stop = QPushButton("Остановить")
-            view.clicked.connect(lambda _, c=command: self.select_detail_log(c.id, c.name))
-            run.clicked.connect(lambda _, c=command, p=project: self.start_command(c.id, c.command, p.folder))
-            stop.clicked.connect(lambda _, c=command: self.stop_command(c.id))
-            for widget in (status, view, run, stop):
-                cells.addWidget(widget)
-            self.command_layout.insertWidget(self.command_layout.count() - 1, row)
-            self.command_controls[command.id] = status, run, stop
-            self._refresh_command_control(command.id)
-        if self.detail_command_id not in {c.id for c in project.commands}:
-            self.detail_command_id = project.commands[0].id if project.commands else None
-        selected = next((c for c in project.commands if c.id == self.detail_command_id), None)
-        self.select_detail_log(selected.id, selected.name) if selected else self.select_detail_log(None, "")
+        for variant in variants if len(variants) > 1 else [project]:
+            if len(variants) > 1:
+                title = variant.branch_name or variant.name
+                branch_heading = make_label(f"{title}  ·  {variant.folder}", "smallCaption")
+                branch_heading.setWordWrap(True)
+                self.command_layout.insertWidget(self.command_layout.count() - 1, branch_heading)
+            for command in variant.commands:
+                row = QFrame()
+                row.setObjectName("detailSection")
+                cells = QHBoxLayout(row)
+                labels = QVBoxLayout()
+                labels.addWidget(make_label(command.name, "cardTitle"))
+                labels.addWidget(make_label(command.command, "muted"))
+                cells.addLayout(labels, 1)
+                status = make_label("")
+                view = QPushButton("Логи")
+                run = QPushButton("Запустить")
+                stop = QPushButton("Остановить")
+                log_title = f"{variant.branch_name or variant.name} · {command.name}" if len(variants) > 1 else command.name
+                view.clicked.connect(lambda _, c=command, title=log_title: self.select_detail_log(c.id, title))
+                run.clicked.connect(lambda _, c=command, p=variant: self.start_command(c.id, c.command, p.folder))
+                stop.clicked.connect(lambda _, c=command: self.stop_command(c.id))
+                for widget in (status, view, run, stop):
+                    cells.addWidget(widget)
+                self.command_layout.insertWidget(self.command_layout.count() - 1, row)
+                self.command_controls[command.id] = status, run, stop
+                self._refresh_command_control(command.id)
+        if self.detail_command_id not in {command.id for _, command in all_commands}:
+            preferred = project.commands or [command for _, command in all_commands]
+            self.detail_command_id = preferred[0].id if preferred else None
+        selected = next(((variant, command) for variant, command in all_commands
+                         if command.id == self.detail_command_id), None)
+        if selected:
+            variant, command = selected
+            title = f"{variant.branch_name or variant.name} · {command.name}" if len(variants) > 1 else command.name
+            self.select_detail_log(command.id, title)
+        else:
+            self.select_detail_log(None, "")
 
     def select_detail_log(self, command_id: int | None, name: str):
         self.detail_command_id = command_id
@@ -690,6 +723,43 @@ class MainWindow(QMainWindow):
         else:
             for command in project.commands:
                 self.start_command(command.id, command.command, project.folder)
+
+    def start_all_branches(self):
+        if self.detail_project_id is None:
+            return
+        errors = []
+        for variant in self.store.list_variants(self.detail_project_id):
+            for command in variant.commands:
+                if self.processes.is_running(command.id):
+                    continue
+                try:
+                    self.processes.start(command.id, command.command, variant.folder)
+                except (OSError, ValueError) as exc:
+                    errors.append(f"{variant.branch_name or variant.name} · {command.name}: {exc}")
+                else:
+                    self.exit_codes.pop(command.id, None)
+                    self.user_stopped_ids.discard(command.id)
+        self._refresh_all()
+        if errors:
+            QMessageBox.warning(self, "Не удалось запустить часть команд", "\n".join(errors))
+
+    def stop_all_branches(self):
+        if self.detail_project_id is None:
+            return
+        errors = []
+        for variant in self.store.list_variants(self.detail_project_id):
+            for command in variant.commands:
+                if not self.processes.is_running(command.id):
+                    continue
+                self.user_stopped_ids.add(command.id)
+                try:
+                    self.processes.stop(command.id)
+                except OSError as exc:
+                    self.user_stopped_ids.discard(command.id)
+                    errors.append(f"{variant.branch_name or variant.name} · {command.name}: {exc}")
+        self._refresh_all()
+        if errors:
+            QMessageBox.warning(self, "Не удалось остановить часть команд", "\n".join(errors))
 
     def start_command(self, command_id: int, command: str, folder: str):
         try:
