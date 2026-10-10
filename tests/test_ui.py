@@ -93,6 +93,15 @@ class WindowSmokeTests(unittest.TestCase):
         self.assertEqual(dialog.call_args.args[0], Path(self.project.folder))
         self.assertFalse(self.window.processes.is_running(self.project.commands[0].id))
 
+    def test_branch_button_requires_stopped_git_project(self):
+        from unittest.mock import patch
+
+        self.window.open_project(self.project.id)
+        self.assertTrue(self.window.branches_button.isEnabled())
+        with patch.object(self.window.processes, "is_running", return_value=True):
+            self.window._fill_detail()
+            self.assertFalse(self.window.branches_button.isEnabled())
+
     def test_update_dialog_runs_git_outside_ui_thread(self):
         from unittest.mock import patch
         from orbit.git_update import GitUpdateResult

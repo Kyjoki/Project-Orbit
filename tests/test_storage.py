@@ -41,6 +41,15 @@ class ProjectStoreTests(unittest.TestCase):
         self.store = ProjectStore(Path(self.temp.name) / "orbit.db")
         self.assertEqual(self.store.get_setting("github_username"), "Kyjoki")
 
+    def test_selected_git_branches_survive_restart_and_project_deletion(self):
+        project = self.store.save(Project(name="Argus", folder="C:/argus"))
+        self.store.set_project_branches(project.id, ["feat/pretest-check", "main", "main"])
+        self.store.close()
+        self.store = ProjectStore(Path(self.temp.name) / "orbit.db")
+        self.assertEqual(self.store.get_project_branches(project.id), ["feat/pretest-check", "main"])
+        self.store.delete(project.id)
+        self.assertEqual(self.store.get_project_branches(project.id), [])
+
     def test_old_database_gets_project_type_column(self):
         import sqlite3
         legacy_path = Path(self.temp.name) / "legacy.db"

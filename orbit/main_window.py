@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
 )
 
 from . import icons
+from .branch_dialog import BranchDialog
+from .branches import BranchError, current_branch
 from .github import GithubRepository, suggest_commands
 from .github_dialog import GithubDialog
 from .git_update_dialog import GitUpdateDialog
@@ -297,12 +299,15 @@ class MainWindow(QMainWindow):
         self.editor_button = self._detail_button("Редактор", self.open_editor)
         self.repo_button = self._detail_button("Репозиторий", lambda: self.open_link("repository_url"))
         self.update_button = self._detail_button("Обновить код", self.update_project)
+        self.branches_button = self._detail_button("Ветки", self.manage_branches)
         self.site_button = self._detail_button("Сайт", lambda: self.open_link("site_url"))
         for button in (self.folder_button, self.editor_button, self.repo_button,
-                       self.update_button, self.site_button):
+                       self.update_button, self.branches_button, self.site_button):
             links.addWidget(button)
         links.addStretch()
         column.addLayout(links)
+        self.branch_info = make_label("", "smallCaption")
+        column.addWidget(self.branch_info)
         self.extra_links_host = QWidget()
         self.extra_links_layout = QHBoxLayout(self.extra_links_host)
         self.extra_links_layout.setContentsMargins(0, 0, 0, 0)
@@ -435,9 +440,20 @@ class MainWindow(QMainWindow):
         self.detail_title.setText(project.name)
         self.detail_description.setText(f"{project.kind}  ·  {project.folder}\n{project.description or 'Описание не указано'}")
         self.repo_button.setEnabled(bool(project.repository_url))
-        self.update_button.setEnabled((Path(project.folder) / ".git").exists()
-                                      and not any(self.processes.is_running(c.id) for c in project.commands))
+        git_folder = (Path(project.folder) / ".git").exists()
+        commands_stopped = not any(self.processes.is_running(c.id) for c in project.commands)
+        self.update_button.setEnabled(git_folder and commands_stopped)
         self.update_button.setToolTip("Получить только новые изменения через Git")
+        self.branches_button.setEnabled(git_folder and commands_stopped)
+        self.branches_button.setToolTip("Выбрать ветки и переключить локальный Git-проект")
+        branch = ""
+        if git_folder:
+            try:
+                branch = current_branch(Path(project.folder))
+            except BranchError:
+                pass
+        self.branch_info.setVisible(git_folder)
+        self.branch_info.setText(f"Текущая ветка: {branch or 'не определена'}")
         self.site_button.setEnabled(bool(project.site_url))
         while self.extra_links_layout.count():
             item = self.extra_links_layout.takeAt(0)
@@ -564,6 +580,21 @@ class MainWindow(QMainWindow):
             return
         dialog = GitUpdateDialog(Path(project.folder), self)
         dialog.exec()
+
+    def manage_branches(self):
+        project = self._detail_project()
+        if not project:
+            return
+        if any(self.processes.is_running(c.id) for c in project.commands):
+            QMessageBox.warning(self, "Команды запущены", "Остановите команды перед переключением ветки.")
+            return
+        if not (Path(project.folder) / ".git").exists():
+            QMessageBox.warning(self, "Git-репозиторий не найден", "В папке проекта нет локального Git-репозитория.")
+            return
+        dialog = BranchDialog(Path(project.folder), self.store.get_project_branches(project.id),
+                              lambda names: self.store.set_project_branches(project.id, names), self)
+        dialog.exec()
+        self._fill_detail()
 
     def edit_project(self, project_id: int | None):
         project = self.store.get(project_id) if project_id is not None else None

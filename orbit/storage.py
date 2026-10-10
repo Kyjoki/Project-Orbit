@@ -29,6 +29,11 @@ class ProjectStore:
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY, value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS project_branches (
+                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                branch TEXT NOT NULL,
+                PRIMARY KEY(project_id, branch)
+            );
         """)
         columns = {row["name"] for row in self.db.execute("PRAGMA table_info(projects)")}
         if "kind" not in columns:
@@ -91,6 +96,20 @@ class ProjectStore:
         with self.db:
             self.db.execute("INSERT INTO settings (key, value) VALUES (?, ?) "
                             "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+
+    def get_project_branches(self, project_id: int) -> list[str]:
+        return [row["branch"] for row in self.db.execute(
+            "SELECT branch FROM project_branches WHERE project_id=? ORDER BY branch COLLATE NOCASE",
+            (project_id,))]
+
+    def set_project_branches(self, project_id: int, branches: list[str]) -> None:
+        names = sorted({branch.strip() for branch in branches if branch.strip()}, key=str.casefold)
+        with self.db:
+            if self.db.execute("SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone() is None:
+                raise ValueError("Проект больше не существует.")
+            self.db.execute("DELETE FROM project_branches WHERE project_id=?", (project_id,))
+            self.db.executemany("INSERT INTO project_branches (project_id, branch) VALUES (?, ?)",
+                                [(project_id, branch) for branch in names])
 
     def close(self) -> None:
         self.db.close()
