@@ -63,6 +63,7 @@ def apply_theme(app):
     palette.setColor(QPalette.ColorRole.Window, QColor("#14151A"))
     palette.setColor(QPalette.ColorRole.WindowText, QColor("#E7E9EF"))
     palette.setColor(QPalette.ColorRole.Base, QColor("#16181E"))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#1E2028"))
     palette.setColor(QPalette.ColorRole.Text, QColor("#E7E9EF"))
     palette.setColor(QPalette.ColorRole.Button, QColor("#23262F"))
     palette.setColor(QPalette.ColorRole.ButtonText, QColor("#E7E9EF"))

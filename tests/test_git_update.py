@@ -51,10 +51,41 @@ class GitUpdateTests(unittest.TestCase):
 
             result = update_repository(root, run=run)
             self.assertEqual((result.before, result.after), ("old", "new"))
-            pull = next(args for args in calls if "pull" in args)
-            self.assertIn("--ff-only", pull)
-            self.assertEqual(pull[0:3], ["git", "-C", str(root)])
+            fetch = next(args for args in calls if "fetch" in args)
+            merge = next(args for args in calls if "merge" in args)
+            self.assertIn("--no-tags", fetch)
+            self.assertIn("--ff-only", merge)
+            self.assertEqual(merge[0:3], ["git", "-C", str(root)])
             self.assertFalse(any("clone" in args for args in calls))
+
+    def test_refuses_divergent_history_without_merging(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as directory:
+            root = Path(directory)
+            calls = []
+
+            def run(args, **_kwargs):
+                calls.append(args)
+                if "merge-base" in args:
+                    return subprocess.CompletedProcess(args, 1, "", "")
+                if "--show-toplevel" in args:
+                    output = str(root)
+                elif "@{upstream}" in args:
+                    output = "origin/main"
+                elif "status" in args:
+                    output = ""
+                elif "HEAD" in args:
+                    output = "local"
+                elif "origin/main" in args:
+                    output = "remote"
+                elif "--is-shallow-repository" in args:
+                    output = "false"
+                else:
+                    output = ""
+                return subprocess.CompletedProcess(args, 0, output, "")
+
+            with self.assertRaisesRegex(GitUpdateError, "расходится"):
+                update_repository(root, run=run)
+            self.assertFalse(any("merge" in args for args in calls))
 
     def test_refuses_nested_folder(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as directory:

@@ -4,7 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from orbit.branches import BranchError, current_branch, list_remote_branches, switch_branch
+from orbit.branches import (BranchError, current_branch, delete_local_branch,
+                            list_local_branches, list_merged_local_branches,
+                            list_remote_branches, switch_branch)
+from orbit.git_update import update_repository
 
 
 class BranchSafetyTests(unittest.TestCase):
@@ -36,8 +39,9 @@ class BranchIntegrationTests(unittest.TestCase):
             remote, seed, local = (root / name for name in ("remote.git", "seed", "local"))
 
             def git(*args):
-                result = subprocess.run(["git", *map(str, args)], check=True,
+                result = subprocess.run(["git", *map(str, args)],
                                         capture_output=True, text=True, encoding="utf-8")
+                self.assertEqual(result.returncode, 0, result.stderr)
                 return result.stdout.strip()
 
             git("init", "--bare", remote)
@@ -60,9 +64,36 @@ class BranchIntegrationTests(unittest.TestCase):
             self.assertEqual(current_branch(local), "main")
             switch_branch(local, "feat/pretest-check")
             self.assertEqual(current_branch(local), "feat/pretest-check")
+            with self.assertRaisesRegex(BranchError, "Основную"):
+                delete_local_branch(local, "main")
             self.assertEqual((local / "main.py").read_text(encoding="utf-8"), "print('feature')\n")
             self.assertEqual(git("-C", local, "rev-parse", "--abbrev-ref", "--symbolic-full-name",
                                  "@{upstream}"), "origin/feat/pretest-check")
             self.assertEqual(len(list(root.glob("local*"))), 1)
             switch_branch(local, "main")
             self.assertEqual((local / "main.py").read_text(encoding="utf-8"), "print('main')\n")
+            self.assertEqual(list_local_branches(local), ["feat/pretest-check", "main"])
+            with self.assertRaisesRegex(BranchError, "текущую"):
+                delete_local_branch(local, "main")
+            delete_local_branch(local, "feat/pretest-check")
+            self.assertEqual(list_local_branches(local), ["main"])
+            self.assertEqual(list_remote_branches(local), ["feat/pretest-check", "main"])
+            switch_branch(local, "feat/pretest-check")
+            self.assertEqual(current_branch(local), "feat/pretest-check")
+            self.assertNotIn("feat/pretest-check", list_merged_local_branches(local))
+            git("-C", seed, "switch", "main")
+            git("-C", seed, "-c", "user.name=OrbitTest", "-c", "user.email=orbit@example.invalid",
+                "merge", "--no-ff", "feat/pretest-check", "-m", "merge feature")
+            git("-C", seed, "push", "origin", "main")
+            switch_branch(local, "main")
+            self.assertTrue(update_repository(local).changed)
+            self.assertIn("feat/pretest-check", list_merged_local_branches(local))
+            switch_branch(local, "feat/pretest-check")
+            (local / "local.txt").write_text("unpublished\n", encoding="utf-8")
+            git("-C", local, "add", "local.txt")
+            git("-C", local, "-c", "user.name=OrbitTest", "-c", "user.email=orbit@example.invalid",
+                "commit", "-m", "unpublished")
+            switch_branch(local, "main")
+            with self.assertRaisesRegex(BranchError, "не опубликованы"):
+                delete_local_branch(local, "feat/pretest-check")
+            self.assertIn("feat/pretest-check", list_local_branches(local))

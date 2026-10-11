@@ -1,4 +1,4 @@
-"""List and switch Git branches in one local checkout on explicit request."""
+"""List, switch and remove local Git branches in one checkout."""
 
 import os
 import subprocess
@@ -45,11 +45,75 @@ def current_branch(folder: Path, run=subprocess.run) -> str:
 
 
 def list_remote_branches(folder: Path, run=subprocess.run) -> list[str]:
+    return sorted(remote_branch_heads(folder, run), key=str.casefold)
+
+
+def remote_branch_heads(folder: Path, run=subprocess.run) -> dict[str, str]:
+    """List branch tip hashes from origin without downloading repository data."""
     git = _Git(folder, run)
     lines = git("ls-remote", "--heads", "origin", timeout=30).splitlines()
     prefix = "refs/heads/"
-    return sorted({line.split("\t", 1)[1][len(prefix):] for line in lines
-                   if "\t" in line and line.split("\t", 1)[1].startswith(prefix)}, key=str.casefold)
+    heads = {}
+    for line in lines:
+        if "\t" in line:
+            sha, ref = line.split("\t", 1)
+            if ref.startswith(prefix):
+                heads[ref[len(prefix):]] = sha
+    return heads
+
+
+def origin_url(folder: Path, run=subprocess.run) -> str:
+    return _Git(folder, run)("remote", "get-url", "origin")
+
+
+def list_local_branches(folder: Path, run=subprocess.run) -> list[str]:
+    git = _Git(folder, run)
+    return sorted(git("for-each-ref", "--format=%(refname:short)", "refs/heads").splitlines(),
+                  key=str.casefold)
+
+
+def list_merged_local_branches(folder: Path, run=subprocess.run) -> list[str]:
+    """Return branches Git can prove are contained in the local main branch."""
+    git = _Git(folder, run)
+    if git.probe("show-ref", "--verify", "--quiet", "refs/heads/main").returncode != 0:
+        return []
+    return sorted(git("for-each-ref", "--merged=refs/heads/main",
+                      "--format=%(refname:short)", "refs/heads").splitlines(), key=str.casefold)
+
+
+def delete_local_branch(folder: Path, branch: str, run=subprocess.run) -> str:
+    """Remove only a downloaded branch whose commits are present on origin."""
+    git = _Git(folder, run)
+    if not branch or branch.startswith("-") or "\x00" in branch:
+        raise BranchError("Некорректное имя ветки.")
+    try:
+        git("check-ref-format", "--branch", branch)
+    except BranchError as exc:
+        raise BranchError("Некорректное имя ветки.") from exc
+    if git("branch", "--show-current") == branch:
+        raise BranchError("Нельзя удалить текущую ветку. Сначала переключитесь на другую.")
+    default_ref = git.probe("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+    default_branch = default_ref.stdout.strip().removeprefix("origin/") if default_ref.returncode == 0 else ""
+    if branch == default_branch or (not default_branch and branch in {"main", "master"}):
+        raise BranchError("Основную ветку проекта удалять нельзя.")
+    if git.probe("show-ref", "--verify", "--quiet", f"refs/heads/{branch}").returncode != 0:
+        raise BranchError("Эта ветка не загружена на компьютер.")
+    remote_ref = f"refs/heads/{branch}"
+    if git.probe("ls-remote", "--exit-code", "--heads", "origin", remote_ref,
+                 timeout=30).returncode != 0:
+        raise BranchError("Ветка не найдена на GitHub. Локальная копия сохранена.")
+    fetch = ["fetch", "--no-tags"]
+    if git("rev-parse", "--is-shallow-repository") == "true":
+        fetch.append("--depth=1")
+    git(*fetch, "origin", f"+{remote_ref}:refs/remotes/origin/{branch}", timeout=600)
+    local_commit = git("rev-parse", f"refs/heads/{branch}")
+    remote_commit = git("rev-parse", f"refs/remotes/origin/{branch}")
+    if local_commit != remote_commit and git.probe(
+        "merge-base", "--is-ancestor", local_commit, remote_commit
+    ).returncode != 0:
+        raise BranchError("В локальной ветке есть коммиты, которые не опубликованы на GitHub.")
+    git("branch", "-D", "--", branch)
+    return branch
 
 
 def switch_branch(folder: Path, branch: str, run=subprocess.run) -> str:
